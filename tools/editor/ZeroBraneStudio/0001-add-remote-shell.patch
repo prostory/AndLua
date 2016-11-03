@@ -1,0 +1,181 @@
+From 892f4cf834903735f6652074664c9b29d32a052c Mon Sep 17 00:00:00 2001
+From: xiaopeng <xiaopeng@gionee.com>
+Date: Thu, 3 Nov 2016 16:15:37 +0800
+Subject: [PATCH] add remote shell
+
+---
+ lualibs/remote.lua    |   86 +++++++++++++++++++++++++++++++++++++++++++++++++
+ src/editor/editor.lua |   27 ++++++++++++++++
+ src/main.lua          |    6 ++++
+ 3 files changed, 119 insertions(+)
+ create mode 100644 lualibs/remote.lua
+
+diff --git a/lualibs/remote.lua b/lualibs/remote.lua
+new file mode 100644
+index 0000000..271d8a2
+--- /dev/null
++++ b/lualibs/remote.lua
+@@ -0,0 +1,86 @@
++local socket = require 'socket'
++
++local remote = {}
++
++remote.started = false
++
++local output = function(res)
++	if res then
++    local output = res
++    if res:sub(1, 8) == '--error:' then
++      output = res:sub(9)
++    end
++    ClearOutput(true)
++    DisplayOutputLn(output:gsub('\001','\n'))
++  else
++    remote.close()
++    DisplayOutputLn("Error: Request remote shell error!")
++  end
++end
++
++local receive = function(c)
++	local res, status = c:receive()
++	if status ~= 'timeout' then
++		output(res)
++	end
++end
++
++remote.remote_code = function(code)
++  if not code then
++    return false
++  end
++  if not code:match('^--remote:%s+(.+)\n') then
++    return false
++  end
++  
++  return true
++end
++
++local eval = function(c, code)
++  if not remote.remote_code(code) then
++    return
++  end
++  c:send(code.."\n--<eof>\n")
++	receive(c)
++end
++
++remote.start = function(host, port)
++  host = host or 'localhost'
++  port = port or 3333
++  
++  if remote.started then
++    return remote
++  end
++  
++  os.execute(ide.config.path.adb .. ' forward tcp:3333 tcp:' .. port)
++  
++  local c, err = socket.connect(host, port)
++  
++  if not c then
++    remote.started = false
++    DisplayOutputLn(err)
++    return remote
++  end
++  
++  c:settimeout(0)
++  
++  remote.eval = function(code)
++    eval(c, code)
++  end
++  
++  remote.close = function()
++    if remote.started then
++      remote.started = false
++      c:close()
++    end
++  end
++  
++  remote.started = true
++  
++  return remote
++end
++
++remote.close = function() end
++
++return remote
++
+diff --git a/src/editor/editor.lua b/src/editor/editor.lua
+index 17cc722..b05419e 100644
+--- a/src/editor/editor.lua
++++ b/src/editor/editor.lua
+@@ -11,6 +11,9 @@ local edcfg = ide.config.editor
+ local styles = ide.config.styles
+ local unpack = table.unpack or unpack
+ local q = EscapeMagic
++-- add for remote shell begin
++local remote = require 'remote'
++-- add for remote shell end
+ 
+ local margin = { LINENUMBER = 0, MARKER = 1, FOLD = 2 }
+ local linenumlen = 4 + 0.5
+@@ -210,6 +213,24 @@ function GetEditorFileAndCurInfo(nochecksave)
+   return fn,info
+ end
+ 
++-- add for remote shell begin
++function RemoteShell(editor)
++  if not remote.started then
++    remote.start()
++  end
++  local code = editor:GetText()
++  if remote.remote_code(code) then
++    func, err = loadstring(code)
++    if func then
++      remote.eval(code)
++    else
++      ClearOutput(true)
++      DisplayOutputLn(err)
++    end
++  end
++end
++-- add for remote shell end
++
+ function EditorAutoComplete(editor)
+   if not (editor and editor.spec) then return end
+ 
+@@ -912,6 +933,9 @@ function CreateEditor(bare)
+       local inserted = bit.band(evtype, wxstc.wxSTC_MOD_INSERTTEXT) ~= 0
+       local deleted = bit.band(evtype, wxstc.wxSTC_MOD_DELETETEXT) ~= 0
+       if (inserted or deleted) then
++      	-- add for remote shell begin
++      	editor:DoWhenIdle(function() RemoteShell(editor) end)
++	-- add for remote shell end
+         SetAutoRecoveryMark()
+ 
+         local linesChanged = inserted and event:GetLinesAdded() or 0
+@@ -975,6 +999,9 @@ function CreateEditor(bare)
+       local linestart = editor:PositionFromLine(line)
+       local localpos = pos-linestart
+       local linetxtopos = linetx:sub(1,localpos)
++      -- add for remote shell begin
++      editor:DoWhenIdle(function() RemoteShell(editor) end)
++      -- add for remote shell end
+ 
+       if PackageEventHandle("onEditorCharAdded", editor, event) == false then
+         -- this event has already been handled
+diff --git a/src/main.lua b/src/main.lua
+index cdeecdf..7229519 100644
+--- a/src/main.lua
++++ b/src/main.lua
+@@ -936,4 +936,10 @@ wx.wxGetApp():MainLoop()
+ -- (2) to fix a crash on Linux 32/64bit during GC cleanup in wxlua
+ -- after an external process has been started from the IDE.
+ -- (3) to fix exit on Windows when started as "bin\lua src\main.lua".
++-- add for remote shell begin
++local remote = require 'remote'
++
++remote.close()
++-- add for remote shell end
++
+ os.exit()
+-- 
+1.7.9.5
+
